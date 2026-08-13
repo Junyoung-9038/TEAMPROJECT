@@ -2,7 +2,11 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
 const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
@@ -55,7 +59,11 @@ async function generateWithRetry(ai, request) {
   throw lastError;
 }
 
-app.use(express.static('.'));
+app.use(express.static(__dirname));
+
+app.get('/', (_request, response) => {
+  response.sendFile(path.join(__dirname, 'index.html'));
+});
 
 app.post('/api/analyze-prescription', upload.array('photos', 5), async (request, response) => {
   if (!process.env.GEMINI_API_KEY) {
