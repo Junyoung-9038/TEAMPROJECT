@@ -102,4 +102,8 @@ app.use((error, _request, response, _next) => {
   response.status(400).json({ error: 'JPG, PNG, WEBP, GIF 형식의 사진만 첨부할 수 있습니다.' });
 });
 
-app.listen(port, () => console.log(`약속시간 서버 (Gemini 기반): http://localhost:${port}`));
+if (!process.env.VERCEL) {
+  app.listen(port, () => console.log(`약속시간 서버 (Gemini 기반): http://localhost:${port}`));
+}
+
+export default app;
