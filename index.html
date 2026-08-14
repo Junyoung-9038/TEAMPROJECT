@@ -84,6 +84,11 @@
     .actions { display:flex; justify-content:flex-end; }
     .clear { border:0; background:none; color:var(--muted); font-size:12px; cursor:pointer; text-decoration:underline; }
     .safety-panel { margin-bottom:20px; border:1px solid #dbe8df; border-radius:16px; padding:15px; background:#f9fcfa; }
+    .reminder-panel { margin-bottom:14px; border:1px solid #d7e9df; border-radius:16px; padding:15px; background:#f6fcf8; }
+    .reminder-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:7px; }
+    .reminder-status { color:var(--muted); font-size:11px; line-height:1.5; }
+    .reminder-button { margin-top:11px; border:0; border-radius:10px; padding:9px 11px; background:var(--green); color:#fff; cursor:pointer; font-size:12px; font-weight:800; }
+    .reminder-button:disabled { opacity:.55; cursor:not-allowed; }
     .safety-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:7px; }
     .safety-status { color:var(--muted); font-size:11px; line-height:1.45; }
     .warning-list { display:grid; gap:9px; margin-top:11px; }
@@ -156,6 +161,7 @@
       <section class="card schedule-card">
         <div class="actions"><button class="clear" id="clear">전체 지우기</button></div>
         <h2>오늘의 복약 시간표</h2>
+        <section class="reminder-panel" aria-labelledby="reminderTitle"><div class="reminder-head"><h3 id="reminderTitle">복약 알림</h3><span class="match-badge">앱 실행 중</span></div><div class="reminder-status" id="reminderStatus">알림을 허용하면 복용 30분 전·정시·30분 후에 알려 드립니다.</div><button class="reminder-button" id="enableReminders" type="button">알림 허용하기</button></section>
         <section class="safety-panel" aria-labelledby="safetyTitle"><div class="safety-head"><h3 id="safetyTitle">성분 중복·DUR 점검</h3><span class="match-badge" id="safetyBadge">대기</span></div><div class="safety-status" id="safetyStatus">약을 추가하면 식약처 정보를 조회합니다.</div><div class="warning-list" id="warningList"></div></section>
         <div id="schedule"><div class="empty"><div class="circle">◷</div><strong>아직 등록한 약이 없어요</strong><br><span>왼쪽에서 복약 정보를 추가해 보세요.</span></div></div>
         <div class="notice" id="notice"></div>
@@ -170,13 +176,15 @@
     const form=$('#medForm'), schedule=$('#schedule'), notice=$('#notice');
     const photoInput=$('#medicinePhoto'), photoList=$('#photoList'), photoCount=$('#photoCount'), analyzeButton=$('#analyzePhotos'), analysisStatus=$('#analysisStatus'), analysisResults=$('#analysisResults');
     const warningList=$('#warningList'), safetyStatus=$('#safetyStatus'), safetyBadge=$('#safetyBadge');
+    const reminderStatus=$('#reminderStatus'), enableReminders=$('#enableReminders');
     const unknown='확인 필요';
     const escapeHtml=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
     const validTime=value=>/^([01]\d|2[0-3]):[0-5]\d$/.test(value);
     const toMin=time=>{const [hour,minute]=time.split(':').map(Number);return hour*60+minute};
     const toTime=minutes=>{const safe=(minutes+1440)%1440;return String(Math.floor(safe/60)).padStart(2,'0')+':'+String(safe%60).padStart(2,'0')};
     const storedProfile=JSON.parse(localStorage.getItem('yakSoksiganProfile')||'{}');
-    let mode='meal', meds=JSON.parse(localStorage.getItem('yakSoksigan')||'[]'), photos=[], analyzedMedicines=[], safetyTimer, safetyVersion=0;
+    let mode='meal', meds=JSON.parse(localStorage.getItem('yakSoksigan')||'[]'), photos=[], analyzedMedicines=[], safetyTimer, safetyVersion=0, reminderTimer, lastReminderCheck=Date.now();
+    const deliveredReminderIds=new Set(JSON.parse(sessionStorage.getItem('yakSoksiganReminderIds')||'[]'));
 
     ['patientAge','breakfastTime','lunchTime','dinnerTime'].forEach(id=>{if(storedProfile[id])$('#'+id).value=storedProfile[id];$('#'+id).addEventListener('change',()=>{saveProfile();queueSafetyCheck()})});
     function profile(){return{patientAge:$('#patientAge').value,breakfastTime:$('#breakfastTime').value,lunchTime:$('#lunchTime').value,dinnerTime:$('#dinnerTime').value}}
@@ -251,7 +259,20 @@
       try{const response=await fetch('/api/check-safety',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({age:Number(profile().patientAge),medicines:meds.map(({id,name,product})=>({id,name,itemSeq:product?.itemSeq,product}))})});const data=await response.json();if(version!==safetyVersion)return;if(!response.ok)throw new Error(data.error||'안전정보 조회 실패');(data.medicines||[]).forEach(result=>{const med=meds.find(item=>String(item.id)===String(result.id));if(med&&result.product)med.product=result.product});localStorage.setItem('yakSoksigan',JSON.stringify(meds));renderSafety(data)}catch(error){if(version!==safetyVersion)return;safetyBadge.textContent='확인 실패';safetyBadge.className='match-badge';safetyStatus.textContent=error.message;warningList.innerHTML='<article class="warning"><strong>전문가 확인이 필요합니다</strong>공식 데이터 조회가 끝나지 않았으므로 이 화면을 안전 판정으로 사용하지 마세요.</article>'}
     }
     function queueSafetyCheck(){clearTimeout(safetyTimer);safetyTimer=setTimeout(checkSafety,350)}
-    function save(){localStorage.setItem('yakSoksigan',JSON.stringify(meds));render();queueSafetyCheck()}
+    function save(){localStorage.setItem('yakSoksigan',JSON.stringify(meds));render();queueSafetyCheck();lastReminderCheck=Date.now()}
+
+    function updateReminderUi(){
+      if(!('Notification' in window)){reminderStatus.textContent='이 브라우저는 알림을 지원하지 않습니다.';enableReminders.disabled=true;return}
+      if(Notification.permission==='granted'){reminderStatus.textContent='알림이 허용되었습니다. 앱을 열어 둔 동안 30분 전·정시·30분 후에 알려 드립니다.';enableReminders.textContent='알림 허용됨';enableReminders.disabled=true;return}
+      if(Notification.permission==='denied'){reminderStatus.textContent='브라우저에서 알림을 차단했습니다. 브라우저 사이트 설정에서 알림을 허용해 주세요.';enableReminders.textContent='알림 차단됨';enableReminders.disabled=true;return}
+      reminderStatus.textContent='알림을 허용하면 복용 30분 전·정시·30분 후에 알려 드립니다.';enableReminders.textContent='알림 허용하기';enableReminders.disabled=false;
+    }
+    async function requestReminderPermission(){if(!('Notification' in window))return;await Notification.requestPermission();updateReminderUi()}
+    function reminderTitle(phase){return phase==='before'?'복약 30분 전':phase==='now'?'복약 시간':'복약 확인'}
+    function reminderBody(phase,names){const medicineNames=[...new Set(names)].join(', ');return phase==='before'?medicineNames+' 복용까지 30분 남았어요.':phase==='now'?medicineNames+'을(를) 복용할 시간이에요.':medicineNames+' 복용 여부를 확인해 주세요.'}
+    async function showReminder(phase,names){const title=reminderTitle(phase),body=reminderBody(phase,names);reminderStatus.textContent='방금 알림: '+title+' · '+body;if(navigator.serviceWorker?.controller){const registration=await navigator.serviceWorker.ready;return registration.showNotification(title,{body,icon:'/icons/app-icon.svg',tag:'yak-soksigan-'+phase,renotify:true})}new Notification(title,{body,icon:'/icons/app-icon.svg'})}
+    function checkReminders(){if(!('Notification' in window)||Notification.permission!=='granted'||!meds.length){lastReminderCheck=Date.now();return}const now=Date.now(),from=Math.max(lastReminderCheck,now-120000),events=new Map();for(const dayOffset of [-1,0,1]){const date=new Date(now);date.setDate(date.getDate()+dayOffset);for(const med of meds){for(const time of med.times||[]){if(!validTime(time))continue;const [hour,minute]=time.split(':').map(Number);for(const [phase,offset] of [['before',-30],['now',0],['after',30]]){const target=new Date(date);target.setHours(hour,minute+offset,0,0);const timestamp=target.getTime();if(timestamp>from&&timestamp<=now){const key=timestamp+'-'+phase;if(!events.has(key))events.set(key,{phase,names:[],id:key});events.get(key).names.push(med.name)}}}}}lastReminderCheck=now;for(const event of events.values()){if(deliveredReminderIds.has(event.id))continue;deliveredReminderIds.add(event.id);showReminder(event.phase,event.names).catch(()=>{});}sessionStorage.setItem('yakSoksiganReminderIds',JSON.stringify([...deliveredReminderIds].slice(-100)))}
+    enableReminders.addEventListener('click',requestReminderPermission);
 
     form.addEventListener('submit',event=>{event.preventDefault();const name=$('#name').value.trim(),amount=$('#amount').value.trim(),times=timesFor();if(!name||!times.length)return;const labels={meal:'식후 자동 제안',interval:'정해진 간격',custom:'직접 지정'};meds.push({id:Date.now()+Math.random(),name,amount,times,label:labels[mode],product:null,scheduleSource:'직접 입력'});save();form.reset();mode='meal';$$('.mode button').forEach((button,index)=>button.classList.toggle('active',index===0));$$('.conditional').forEach((section,index)=>section.classList.toggle('show',index===0));$('#mealCount').value='3';$('#startTime').value='08:00';$$('#custom input').forEach((input,index)=>input.value=['08:00','13:00','20:00'][index]);$('#name').focus()});
     $('#clear').onclick=()=>{if(meds.length&&confirm('등록한 모든 복약 정보를 지울까요?')){meds=[];save()}};
@@ -261,7 +282,7 @@
     installApp.addEventListener('click', async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;installApp.classList.remove('show')});
     window.addEventListener('appinstalled',()=>{installApp.classList.remove('show');deferredInstallPrompt=null});
     if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(error=>console.warn('Service worker registration failed:',error)));
-    saveProfile();render();renderPhotos();queueSafetyCheck();
+    saveProfile();render();renderPhotos();queueSafetyCheck();updateReminderUi();checkReminders();reminderTimer=setInterval(checkReminders,15000);
   </script>
 </body>
 </html>
