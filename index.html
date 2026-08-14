@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#19755d" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icons/app-icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/app-icon.svg" />
   <title>약속시간 | 나의 복약 시간표</title>
   <style>
     :root { --ink:#1d2a3a; --muted:#64748b; --paper:#fffdfa; --bg:#f4f7f5; --green:#19755d; --mint:#dff5e8; --red:#a53d36; --redbg:#fff0ef; --orange:#9a541b; --orangebg:#fff4e8; --line:#e0e8e3; --shadow:0 16px 45px rgba(30,65,50,.10); }
@@ -13,6 +19,9 @@
     .brand { display:flex; align-items:center; gap:10px; font-weight:800; font-size:20px; }
     .brand-mark { width:36px; height:36px; border-radius:12px; display:grid; place-items:center; background:var(--green); color:white; font-size:23px; }
     .tag { color:var(--green); background:var(--mint); padding:7px 12px; border-radius:999px; font-size:12px; font-weight:700; }
+    .header-actions { display:flex; align-items:center; gap:8px; }
+    .install-app { display:none; border:1px solid var(--green); color:var(--green); background:#fff; border-radius:999px; padding:7px 11px; cursor:pointer; font-size:12px; font-weight:800; }
+    .install-app.show { display:block; }
     main { max-width:1180px; margin:0 auto; padding:15px 24px 60px; }
     .intro { margin:20px 0 28px; }
     h1 { font-size:clamp(30px,5vw,45px); letter-spacing:-2.3px; margin:0 0 11px; line-height:1.2; }
@@ -102,7 +111,7 @@
   </style>
 </head>
 <body>
-  <header><div class="brand"><span class="brand-mark">✚</span>약속시간</div><span class="tag">공식 정보로 한 번 더 확인</span></header>
+  <header><div class="brand"><span class="brand-mark">✚</span>약속시간</div><div class="header-actions"><button class="install-app" id="installApp" type="button">앱 설치</button><span class="tag">공식 정보로 한 번 더 확인</span></div></header>
   <main>
     <section class="intro"><h1>여러 약도 한눈에,<br>놓치지 않도록.</h1><p>처방전 사진을 읽고 식약처 품목·DUR 정보와 연결해 복약 시간표와 주의사항을 정리합니다.</p></section>
     <div class="grid">
@@ -246,6 +255,12 @@
 
     form.addEventListener('submit',event=>{event.preventDefault();const name=$('#name').value.trim(),amount=$('#amount').value.trim(),times=timesFor();if(!name||!times.length)return;const labels={meal:'식후 자동 제안',interval:'정해진 간격',custom:'직접 지정'};meds.push({id:Date.now()+Math.random(),name,amount,times,label:labels[mode],product:null,scheduleSource:'직접 입력'});save();form.reset();mode='meal';$$('.mode button').forEach((button,index)=>button.classList.toggle('active',index===0));$$('.conditional').forEach((section,index)=>section.classList.toggle('show',index===0));$('#mealCount').value='3';$('#startTime').value='08:00';$$('#custom input').forEach((input,index)=>input.value=['08:00','13:00','20:00'][index]);$('#name').focus()});
     $('#clear').onclick=()=>{if(meds.length&&confirm('등록한 모든 복약 정보를 지울까요?')){meds=[];save()}};
+    let deferredInstallPrompt;
+    const installApp=$('#installApp');
+    window.addEventListener('beforeinstallprompt', event=>{event.preventDefault();deferredInstallPrompt=event;installApp.classList.add('show')});
+    installApp.addEventListener('click', async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;installApp.classList.remove('show')});
+    window.addEventListener('appinstalled',()=>{installApp.classList.remove('show');deferredInstallPrompt=null});
+    if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(error=>console.warn('Service worker registration failed:',error)));
     saveProfile();render();renderPhotos();queueSafetyCheck();
   </script>
 </body>
