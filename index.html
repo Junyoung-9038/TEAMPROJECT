@@ -16,8 +16,15 @@
     body { margin:0; font-family:"Pretendard","Noto Sans KR",system-ui,sans-serif; color:var(--ink); background:radial-gradient(circle at 0 0,#e1f3e7 0,transparent 32%),var(--bg); min-height:100vh; }
     button,input,select { font:inherit; }
     header { max-width:1180px; margin:auto; padding:32px 24px 18px; display:flex; align-items:center; justify-content:space-between; }
-    .brand { display:flex; align-items:center; gap:10px; font-weight:800; font-size:20px; }
-    .brand-mark { width:36px; height:36px; border-radius:12px; display:grid; place-items:center; background:var(--green); color:white; font-size:23px; }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:900; font-size:21px; letter-spacing:-1px; }
+    .brand-mark { width:39px; height:39px; border-radius:13px; display:flex; align-items:center; justify-content:center; overflow:hidden; background:#f1faf4; border:1px solid #c6e5d1; transform:rotate(-10deg); box-shadow:0 4px 10px #19755d1f; }
+    .capsule { width:25px; height:14px; border-radius:999px; overflow:hidden; display:flex; border:1.5px solid var(--green); background:white; }
+    .capsule-half { width:50%; height:100%; }
+    .capsule-half:first-child { background:var(--green); position:relative; }
+    .capsule-half:first-child:after { content:"+"; position:absolute; color:white; font-size:12px; font-weight:900; line-height:12px; left:3px; top:0; transform:rotate(10deg); }
+    .capsule-half:last-child { background:#f7b26e; }
+    .brand-name strong { color:var(--green); }
+    .brand-name small { display:block; margin-top:1px; color:#7c8c83; font-size:9px; font-weight:750; letter-spacing:.2px; }
     .tag { color:var(--green); background:var(--mint); padding:7px 12px; border-radius:999px; font-size:12px; font-weight:700; }
     .header-actions { display:flex; align-items:center; gap:8px; }
     .install-app { display:none; border:1px solid var(--green); color:var(--green); background:#fff; border-radius:999px; padding:7px 11px; cursor:pointer; font-size:12px; font-weight:800; }
@@ -116,7 +123,7 @@
   </style>
 </head>
 <body>
-  <header><div class="brand"><span class="brand-mark">✚</span>약속시간</div><div class="header-actions"><button class="install-app" id="installApp" type="button">앱 설치</button><span class="tag">공식 정보로 한 번 더 확인</span></div></header>
+  <header><div class="brand" aria-label="약속시간, 나의 복약 도우미"><span class="brand-mark" aria-hidden="true"><span class="capsule"><span class="capsule-half"></span><span class="capsule-half"></span></span></span><span class="brand-name"><strong>약</strong>속시간<small>나의 복약 도우미</small></span></div><div class="header-actions"><button class="install-app" id="installApp" type="button">앱 설치</button><span class="tag">공식 정보로 한 번 더 확인</span></div></header>
   <main>
     <section class="intro"><h1>여러 약도 한눈에,<br>놓치지 않도록.</h1><p>처방전 사진을 읽고 식약처 품목·DUR 정보와 연결해 복약 시간표와 주의사항을 정리합니다.</p></section>
     <div class="grid">
