@@ -111,14 +111,7 @@ async function fetchMfds(path, params = {}) {
   return cached(cacheKey, async () => {
     const result = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(12000) });
     const raw = await result.text();
-    if (!result.ok) {
-      let detail = '';
-      try {
-        const errorPayload = JSON.parse(raw);
-        detail = text(errorPayload?.response?.header?.resultMsg || errorPayload?.header?.resultMsg || errorPayload?.message);
-      } catch { /* 응답 본문이 JSON이 아니면 상태 코드만 사용 */ }
-      throw new Error(`식약처 API HTTP ${result.status}${detail ? `: ${detail}` : ''}`);
-    }
+    if (!result.ok) throw new Error(`식약처 API HTTP ${result.status}`);
     let payload;
     try { payload = JSON.parse(raw); } catch { throw new Error('식약처 API가 JSON이 아닌 응답을 보냈습니다. 활용신청과 API 경로를 확인하세요.'); }
     const header = payload?.response?.header ?? payload?.header;
@@ -212,22 +205,21 @@ function medicineNameVariants(value) {
 async function searchProducts(name, itemCode = '') {
   const queryName = text(name) === '확인 필요' ? '' : text(name);
   const queryCode = text(itemCode) === '확인 필요' ? '' : text(itemCode);
-  if (!queryName && !queryCode) return { matches: [], errors: [] };
+  if (!queryName && !queryCode) return [];
   const variants = medicineNameVariants(queryName);
   const groups = [];
-  const errors = [];
 
   for (const variant of variants.length ? variants : ['']) {
     const results = await Promise.all([
-      fetchMfds(MFDS_PATHS.product, { item_name: variant, prdlst_Stdr_code: queryCode }).catch(error => { errors.push(error.message); return []; }),
-      fetchMfds(MFDS_PATHS.durProduct, { itemName: variant, itemSeq: queryCode }).catch(error => { errors.push(error.message); return []; })
+      fetchMfds(MFDS_PATHS.product, { item_name: variant, prdlst_Stdr_code: queryCode }).catch(() => []),
+      fetchMfds(MFDS_PATHS.durProduct, { itemName: variant, itemSeq: queryCode }).catch(() => [])
     ]);
     groups.push(...results);
     if (mergeProducts(...groups).length) break;
   }
 
   const products = mergeProducts(...groups);
-  const matches = products.map(product => ({
+  return products.map(product => ({
     ...product,
     score: queryCode && product.itemSeq === queryCode
       ? 110
@@ -236,21 +228,17 @@ async function searchProducts(name, itemCode = '') {
     .filter(product => product.score > 0 || (queryCode && product.itemSeq === queryCode))
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
-  return { matches, errors: [...new Set(errors)] };
 }
 
 async function enrichMedicine(medicine) {
-  const { matches, errors } = await searchProducts(medicine.name, medicine.item_code);
+  const matches = await searchProducts(medicine.name, medicine.item_code);
   const exact = matches.find(match => match.score >= 100);
   return {
     ...medicine,
     matches,
     matched_product: exact || null,
     confirmation_required: !exact,
-    mfds_errors: errors,
-    verification_message: errors.length
-      ? '식약처 공식 조회가 실패했습니다. 후보 없음은 약이 없다는 뜻이 아닙니다. API 키의 활용신청·승인 상태를 확인하세요.'
-      : exact
+    verification_message: exact
       ? '식약처 품목명과 정확히 일치했습니다.'
       : matches.length
         ? '비슷한 품목을 찾았습니다. 실제 약 봉투와 비교해 선택하세요.'
@@ -370,7 +358,7 @@ async function resolveForSafety(input) {
   for (const medicine of input.slice(0, 30)) {
     let product = medicine.product && medicine.product.name ? medicine.product : null;
     if (!product) {
-      const { matches } = await searchProducts(medicine.name, medicine.itemSeq);
+      const matches = await searchProducts(medicine.name, medicine.itemSeq);
       product = matches.find(match => match.score >= 100) || null;
     }
     result.push({ ...medicine, product });
