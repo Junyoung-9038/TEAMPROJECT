@@ -2,17 +2,15 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync } from 'node:fs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const app = express();
 const port = process.env.PORT || 3000;
+const indexHtml = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 const MFDS_BASE_URL = process.env.MFDS_BASE_URL || 'https://apis.data.go.kr/1471000';
 const MFDS_PATHS = {
-  product: process.env.MFDS_PRODUCT_PATH || '/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnDtlInq06',
-  durProduct: process.env.MFDS_DUR_PRODUCT_PATH || '/DURPrdlstInfoService03/getDurPrdlstInfoList3',
+  product: process.env.MFDS_PRODUCT_PATH || '/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07',
+  durProduct: process.env.MFDS_DUR_PRODUCT_PATH || '/DURPrdlstInfoService03/getDurPrdlstInfoList03',
   interaction: process.env.MFDS_DUR_INTERACTION_PATH || '/DURPrdlstInfoService03/getUsjntTabooInfoList03',
   efficacyDuplicate: process.env.MFDS_DUR_DUPLICATE_PATH || '/DURPrdlstInfoService03/getEfcyDplctInfoList03',
   elderly: process.env.MFDS_DUR_ELDERLY_PATH || '/DURPrdlstInfoService03/getOdsnAtentInfoList03'
@@ -35,13 +33,11 @@ const prescriptionSchema = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['name', 'item_code', 'manufacturer', 'dosage_form', 'imprint', 'amount_per_dose', 'frequency_per_day', 'times', 'meal_timing', 'duration'],
+        required: ['name', 'item_code', 'manufacturer', 'amount_per_dose', 'frequency_per_day', 'times', 'meal_timing', 'duration'],
         properties: {
           name: { type: 'string' },
           item_code: { type: 'string' },
           manufacturer: { type: 'string' },
-          dosage_form: { type: 'string' },
-          imprint: { type: 'string' },
           amount_per_dose: { type: 'string' },
           frequency_per_day: { type: 'string' },
           times: { type: 'array', items: { type: 'string' } },
@@ -53,13 +49,16 @@ const prescriptionSchema = {
   }
 };
 
-const extractionPrompt = `You are performing OCR and data structuring only, not medical advice. Read only medication directions visibly written in the supplied Korean prescription or medicine-bag images. Do not infer, calculate, normalize, or invent information. For every unreadable, ambiguous, or absent scalar field, return exactly "확인 필요". item_code means the Korean MFDS item sequence/품목기준코드 only when visibly printed. dosage_form means a visibly stated form such as 정, 캡슐, 시럽, 산. imprint means only letters, numbers, or markings visibly printed on the tablet/capsule itself; do not guess it. For times, return an empty array unless an explicit clock time is visible. Never convert meal-based directions into guessed times. Include only medicines supported by the images. Return Korean text that conforms to the supplied JSON schema.`;
+const extractionPrompt = `You are performing OCR and data structuring only, not medical advice. Read only medication directions visibly written in the supplied Korean prescription or medicine-bag images. Do not infer, calculate, normalize, or invent information. For every unreadable, ambiguous, or absent scalar field, return exactly "확인 필요". item_code means the Korean MFDS item sequence/품목기준코드 only when visibly printed. For times, return an empty array unless an explicit clock time is visible. Never convert meal-based directions into guessed times. Include only medicines supported by the images. Return Korean text that conforms to the supplied JSON schema.`;
 
 const cache = new Map();
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const text = value => String(value ?? '').trim();
 const stripHtml = value => text(value).replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ').replace(/\s+/g, ' ').trim();
-const normalized = value => stripHtml(value).toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+const normalized = value => stripHtml(value)
+  .toLowerCase()
+  .replace(/(\d+(?:\.\d+)?)\s*mg\b/g, '$1밀리그램')
+  .replace(/[^0-9a-z가-힣]/g, '');
 const keyName = value => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
 
 function pick(record, ...names) {
@@ -137,37 +136,18 @@ function normalizeProduct(record) {
     itemSeq: pick(record, 'ITEM_SEQ', 'PRDLST_SN'),
     name: pick(record, 'ITEM_NAME', 'PRDLST_NM'),
     manufacturer: pick(record, 'ENTP_NAME', 'BSSH_NM'),
-    dosageForm: pick(record, 'CHART', 'FORM_NAME', 'DRUG_SHAPE', 'DOSAGE_FORM'),
     ingredients: ingredientParts(record)
   };
 }
 
-function tokens(value) {
-  return text(value).toLowerCase().split(/[\s·ㆍ,()/\-]+/).map(normalized).filter(token => token.length >= 2);
-}
-
 function productScore(query, product) {
-  const q = normalized(query.name);
+  const q = normalized(query);
   const name = normalized(product.name);
-  if (!q || !name) return { score: 0, reasons: [] };
-  let score = 0;
-  const reasons = [];
-  if (q === name) { score += 70; reasons.push('품목명 일치'); }
-  else if (name.startsWith(q) || q.startsWith(name)) { score += 54; reasons.push('품목명 앞부분 일치'); }
-  else if (name.includes(q) || q.includes(name)) { score += 42; reasons.push('품목명 일부 일치'); }
-  else {
-    const queryTokens = tokens(query.name), productTokens = new Set(tokens(product.name));
-    const overlap = queryTokens.filter(token => productTokens.has(token));
-    if (overlap.length) { score += Math.min(34, overlap.length * 17); reasons.push('품목명 단어 일부 일치'); }
-  }
-  const manufacturer = normalized(query.manufacturer), officialManufacturer = normalized(product.manufacturer);
-  if (manufacturer && officialManufacturer && (manufacturer === officialManufacturer || officialManufacturer.includes(manufacturer) || manufacturer.includes(officialManufacturer))) { score += 18; reasons.push('제조사 일치'); }
-  const dosageForm = normalized(query.dosageForm);
-  const productForm = normalized(product.dosageForm+' '+product.name);
-  if (dosageForm && productForm.includes(dosageForm)) { score += 8; reasons.push('제형 일치'); }
-  const imprint = normalized(query.imprint);
-  if (imprint && normalized(product.name).includes(imprint)) { score += 4; reasons.push('식별문자 후보 일치'); }
-  return { score: Math.min(score, 99), reasons };
+  if (!q || !name) return 0;
+  if (q === name) return 100;
+  if (name.startsWith(q) || q.startsWith(name)) return 85;
+  if (name.includes(q) || q.includes(name)) return 70;
+  return 0;
 }
 
 function mergeProducts(...groups) {
@@ -179,50 +159,63 @@ function mergeProducts(...groups) {
     const previous = merged.get(id);
     if (!previous) return merged.set(id, product);
     previous.manufacturer ||= product.manufacturer;
-    previous.dosageForm ||= product.dosageForm;
     const ingredientMap = new Map([...previous.ingredients, ...product.ingredients].map(item => [item.code || normalized(item.name), item]));
     previous.ingredients = [...ingredientMap.values()];
   });
   return [...merged.values()];
 }
 
-function searchQueries(name) {
-  const raw = text(name) === '확인 필요' ? '' : text(name);
-  const withoutParentheses = raw.replace(/\([^)]*\)/g, ' ').trim();
-  const withoutDose = withoutParentheses.replace(/\d+(?:\.\d+)?\s*(?:mg|mcg|μg|g|ml|%|밀리그램|그램)/gi, ' ').trim();
-  return [...new Set([raw, withoutParentheses, withoutDose].filter(value => normalized(value).length >= 2))].slice(0, 3);
+function medicineNameVariants(value) {
+  const original = text(value);
+  if (!original || original === '확인 필요') return [];
+  const compact = original.replace(/\s+/g, '');
+  const koreanUnit = compact.replace(/(\d+(?:\.\d+)?)mg(?=$|[^a-z])/gi, '$1밀리그램');
+  const baseName = koreanUnit
+    .replace(/\d+(?:\.\d+)?밀리그램.*$/i, '')
+    .replace(/\([^)]*\).*$/, '');
+  return [...new Set([original, koreanUnit, baseName].map(text).filter(Boolean))];
 }
 
-async function searchProducts(medicine) {
-  const queryName = text(medicine.name) === '확인 필요' ? '' : text(medicine.name);
-  const queryCode = text(medicine.item_code) === '확인 필요' ? '' : text(medicine.item_code);
+async function searchProducts(name, itemCode = '') {
+  const queryName = text(name) === '확인 필요' ? '' : text(name);
+  const queryCode = text(itemCode) === '확인 필요' ? '' : text(itemCode);
   if (!queryName && !queryCode) return [];
-  const queries = searchQueries(queryName);
-  const calls = queries.flatMap(candidate => [
-    fetchMfds(MFDS_PATHS.product, { item_name: candidate, item_seq: queryCode }).catch(() => []),
-    fetchMfds(MFDS_PATHS.durProduct, { itemName: candidate, itemSeq: queryCode }).catch(() => [])
-  ]);
-  const products = mergeProducts(...await Promise.all(calls));
-  return products.map(product => {
-    const result = queryCode && product.itemSeq === queryCode ? { score: 100, reasons: ['사진의 품목 코드 일치'] } : productScore({ name: queryName, manufacturer: medicine.manufacturer, dosageForm: medicine.dosage_form, imprint: medicine.imprint }, product);
-    return { ...product, ...result };
-  }).filter(product => product.score > 0 || (queryCode && product.itemSeq === queryCode))
+  const variants = medicineNameVariants(queryName);
+  const groups = [];
+
+  for (const variant of variants.length ? variants : ['']) {
+    const results = await Promise.all([
+      fetchMfds(MFDS_PATHS.product, { item_name: variant, prdlst_Stdr_code: queryCode }).catch(() => []),
+      fetchMfds(MFDS_PATHS.durProduct, { itemName: variant, itemSeq: queryCode }).catch(() => [])
+    ]);
+    groups.push(...results);
+    if (mergeProducts(...groups).length) break;
+  }
+
+  const products = mergeProducts(...groups);
+  return products.map(product => ({
+    ...product,
+    score: queryCode && product.itemSeq === queryCode
+      ? 110
+      : Math.max(0, ...variants.map(variant => productScore(variant, product)))
+  }))
+    .filter(product => product.score > 0 || (queryCode && product.itemSeq === queryCode))
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
 }
 
 async function enrichMedicine(medicine) {
-  const matches = await searchProducts(medicine);
-  const exact = matches.find(match => match.score === 100);
+  const matches = await searchProducts(medicine.name, medicine.item_code);
+  const exact = matches.find(match => match.score >= 100);
   return {
     ...medicine,
     matches,
-    matched_product: null,
-    confirmation_required: true,
+    matched_product: exact || null,
+    confirmation_required: !exact,
     verification_message: exact
-      ? '사진의 품목 코드가 일치하는 공식 품목을 찾았습니다. 그래도 약 봉투와 대조해 직접 선택하세요.'
+      ? '식약처 품목명과 정확히 일치했습니다.'
       : matches.length
-        ? '사진 정보와 비교해 점수화한 후보입니다. 실제 약 봉투와 대조해 직접 선택하세요.'
+        ? '비슷한 품목을 찾았습니다. 실제 약 봉투와 비교해 선택하세요.'
         : '식약처 품목을 자동으로 확인하지 못했습니다. 약사에게 제품명을 확인하세요.'
   };
 }
@@ -335,7 +328,7 @@ async function resolveForSafety(input) {
   for (const medicine of input.slice(0, 30)) {
     let product = medicine.product && medicine.product.name ? medicine.product : null;
     if (!product) {
-      const matches = await searchProducts({ ...medicine, item_code: medicine.itemSeq });
+      const matches = await searchProducts(medicine.name, medicine.itemSeq);
       product = matches.find(match => match.score >= 100) || null;
     }
     result.push({ ...medicine, product });
@@ -344,11 +337,8 @@ async function resolveForSafety(input) {
 }
 
 app.use(express.json({ limit: '300kb' }));
-app.use(express.static(__dirname));
-
-app.get('/', (_request, response) => {
-  response.sendFile(path.join(__dirname, 'index.html'));
-});
+app.use(express.static('.'));
+app.get('/', (_request, response) => response.type('html').send(indexHtml));
 
 app.get('/api/health', (_request, response) => response.json({
   ok: true, geminiConfigured: Boolean(process.env.GEMINI_API_KEY), mfdsConfigured: Boolean(mfdsKey())
@@ -422,4 +412,3 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
-export { productScore, searchQueries };
